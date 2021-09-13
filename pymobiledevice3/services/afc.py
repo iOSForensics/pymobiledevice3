@@ -444,7 +444,6 @@ class AfcService:
     def _do_operation(self, opcode: afc_opcode_t, data: bytes = b''):
         self._dispatch_packet(opcode, data)
         status, data = self._receive_data()
-
         exception = AfcException
         if status != afc_error_t.SUCCESS:
             if status == afc_error_t.OBJECT_NOT_FOUND:
@@ -599,7 +598,7 @@ class AfcShell(Cmd):
     @safe_cmd
     def do_stat(self, args):
         args = posixpath.join(self.curdir, args)
-        pprint(self.afc.stat(args))
+        return self.afc.stat(args)
 
     def _update_prompt(self):
         self.prompt = highlight(f'[AFC:{self.curdir}]$ ', lexers.BashSessionLexer(),
