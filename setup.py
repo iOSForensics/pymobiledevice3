@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 import os
 
 BASE_DIR = os.path.realpath(os.path.dirname(__file__))
-VERSION = '1.10.5'
-PACKAGE_NAME = 'pymobiledevice3'
+VERSION = '1.10.6'
+PACKAGE_NAME = 'pymobiledevice3-gotohack'
 PACKAGES = [p for p in find_packages() if not p.startswith('tests')]
 
 
