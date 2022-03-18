@@ -1,22 +1,27 @@
 import logging
 import plistlib
-import time
 import typing
-from pathlib import Path
 from uuid import uuid4
 
 import asn1
 import requests
+
 from pymobiledevice3.exceptions import PyMobileDevice3Exception
 from pymobiledevice3.restore.img4 import img4_get_component_tag
 from pymobiledevice3.utils import bytes_to_uint
 
-TSS_CLIENT_VERSION_STRING = 'libauthinstall-776.60.1'
-TICKETS_SUBDIR = Path('offline_requests')
+TSS_CONTROLLER_ACTION_URL = 'http://gs.apple.com/TSS/controller?action=2'
 
-OFFLINE_REQUEST_SCRIPT = """#!/bin/sh
-curl -d "@{request}" -H 'Cache-Control: no-cache' -H 'Content-type: text/xml; charset="utf-8"' -H 'User-Agent: InetURL/1.0' -H 'Expect: ' 'http://gs.apple.com/TSS/controller?action=2' | tee {response} 
-"""
+TSS_CLIENT_VERSION_STRING = 'libauthinstall-850.0.2'
+
+logger = logging.getLogger(__name__)
+
+
+def get_with_or_without_comma(obj: typing.Mapping, k: str, default=None):
+    val = obj.get(k, obj.get(k.replace(',', '')))
+    if val is None and default is not None:
+        val = default
+    return val
 
 
 class TSSResponse(dict):
@@ -42,14 +47,13 @@ class TSSResponse(dict):
 
 
 class TSSRequest:
-    def __init__(self, offline=False):
+    def __init__(self):
         self._request = {
             '@BBTicket': True,
             '@HostPlatformInfo': 'mac',
             '@VersionInfo': TSS_CLIENT_VERSION_STRING,
             '@UUID': str(uuid4()).upper(),
         }
-        self._offline = offline
 
     @staticmethod
     def apply_restore_request_rules(tss_entry: typing.Mapping, parameters: typing.Mapping, rules: list):
@@ -73,7 +77,7 @@ class TSSRequest:
                 elif key == 'ApInRomDFU':
                     value2 = parameters.get('ApInRomDFU')
                 else:
-                    logging.error(f'Unhandled condition {key} while parsing RestoreRequestRules')
+                    logger.error(f'Unhandled condition {key} while parsing RestoreRequestRules')
                     value2 = None
 
                 if value2:
@@ -90,7 +94,7 @@ class TSSRequest:
                     value2 = tss_entry.get(key)
                     if value2:
                         tss_entry.pop(key)
-                    logging.debug(f'Adding {key}={value} to TSS entry')
+                    logger.debug(f'Adding {key}={value} to TSS entry')
                     tss_entry[key] = value
         return tss_entry
 
@@ -157,17 +161,17 @@ class TSSRequest:
                 continue
 
             if parameters.get('ApSupportsImg4', False) and ('RestoreRequestRules' not in info_dict):
-                logging.debug(f'Skipping "{key}" as it doesn\'t have RestoreRequestRules')
+                logger.debug(f'Skipping "{key}" as it doesn\'t have RestoreRequestRules')
                 continue
 
             if parameters.get('_OnlyFWComponents', False):
                 if not manifest_node.get('Trusted', False):
-                    logging.debug(f'skipping {key} as it is not trusted')
+                    logger.debug(f'skipping {key} as it is not trusted')
                     continue
                 info = manifest_node['Info']
                 if not info['IsFirmwarePayload'] and not info['IsSecondaryFirmwarePayload'] and \
                         not info['IsFUDFirmware']:
-                    logging.debug(f'skipping {key} as it is neither firmware nor secondary nor FUD firmware payload')
+                    logger.debug(f'skipping {key} as it is neither firmware nor secondary nor FUD firmware payload')
                     continue
 
             # copy this entry
@@ -180,7 +184,7 @@ class TSSRequest:
             if 'Info' in manifest_entry and 'RestoreRequestRules' in manifest_entry['Info']:
                 rules = manifest_entry['Info']['RestoreRequestRules']
                 if rules:
-                    logging.debug(f'Applying restore request rules for entry {key}')
+                    logger.debug(f'Applying restore request rules for entry {key}')
                     tss_entry = self.apply_restore_request_rules(tss_entry, parameters, rules)
 
             # Make sure we have a Digest key for Trusted items even if empty
@@ -275,7 +279,7 @@ class TSSRequest:
         self._request['@Savage,Ticket'] = True
 
         # add Savage,UID
-        self._request['Savage,UID'] = parameters['Savage,UID']
+        self._request['Savage,UID'] = get_with_or_without_comma(parameters, 'Savage,UID')
 
         # add SEP
         self._request['SEP'] = {'Digest': manifest['SEP']['Digest']}
@@ -285,14 +289,16 @@ class TSSRequest:
             'Savage,ProductionMode', 'Savage,Nonce', 'Savage,Nonce')
 
         for k in keys_to_copy:
-            if k in parameters:
-                self._request[k] = parameters[k]
+            value = get_with_or_without_comma(parameters, k)
+            if value is None:
+                continue
+            self._request[k] = value
 
-        isprod = parameters['Savage,ProductionMode']
+        isprod = get_with_or_without_comma(parameters, 'Savage,ProductionMode')
 
         # get the right component name
         comp_name = 'Savage,B0-Prod-Patch' if isprod else 'Savage,B0-Dev-Patch'
-        node = parameters.get('Savage,Revision')
+        node = get_with_or_without_comma(parameters, 'Savage,Revision')
 
         if isinstance(node, bytes):
             savage_rev = node
@@ -326,11 +332,10 @@ class TSSRequest:
             'Yonkers,PatchEpoch', 'Yonkers,ProductionMode', 'Yonkers,ReadECKey', 'Yonkers,ReadFWKey',)
 
         for k in keys_to_copy:
-            if k in parameters:
-                self._request[k] = parameters[k]
+            self._request[k] = get_with_or_without_comma(parameters, k)
 
-        isprod = parameters.get('Yonkers,ProductionMode', 1)
-        fabrevision = parameters.get('Yonkers,FabRevision', 0xffffffffffffffff)
+        isprod = get_with_or_without_comma(parameters, 'Yonkers,ProductionMode', 1)
+        fabrevision = get_with_or_without_comma(parameters, 'Yonkers,FabRevision', 0xffffffffffffffff)
         comp_node = None
         result_comp_name = None
 
@@ -405,15 +410,22 @@ class TSSRequest:
 
         keys_to_copy_uint = ('Rap,BoardID', 'Rap,ChipID', 'Rap,ECID', 'Rap,SecurityDomain',)
 
-        for k in keys_to_copy_uint:
-            self._request[k] = bytes_to_uint(parameters[k])
+        for key in keys_to_copy_uint:
+            value = get_with_or_without_comma(parameters, key)
+
+            if isinstance(value, bytes):
+                self._request[key] = bytes_to_uint(value)
+            else:
+                self._request[key] = value
 
         keys_to_copy_bool = ('Rap,ProductionMode', 'Rap,SecurityMode',)
 
-        for k in keys_to_copy_bool:
-            self._request[k] = bytes_to_uint(parameters[k]) == 1
+        for key in keys_to_copy_bool:
+            value = get_with_or_without_comma(parameters, key)
+            self._request[key] = bytes_to_uint(value) == 1
 
-        nonce = parameters.get('Rap,Nonce')
+        nonce = get_with_or_without_comma(parameters, 'Rap,Nonce')
+
         if nonce is not None:
             self._request['Rap,Nonce'] = nonce
 
@@ -434,7 +446,7 @@ class TSSRequest:
             if trusted:
                 digest = manifest_entry.get('Digest')
                 if digest is None:
-                    logging.debug(f'No Digest data, using empty value for entry {comp_name}')
+                    logger.debug(f'No Digest data, using empty value for entry {comp_name}')
                     manifest_entry['Digest'] = b''
 
             manifest_entry.pop('Info')
@@ -477,10 +489,55 @@ class TSSRequest:
             if trusted:
                 digest = manifest_entry.get('Digest')
                 if digest is None:
-                    logging.debug(f'No Digest data, using empty value for entry {comp_name}')
+                    logger.debug(f'No Digest data, using empty value for entry {comp_name}')
                     manifest_entry['Digest'] = b''
 
             manifest_entry.pop('Info')
+
+            # finally add entry to request
+            self._request[comp_name] = manifest_entry
+
+        if overrides is not None:
+            self._request.update(overrides)
+
+    def add_tcon_tags(self, parameters: typing.Mapping, overrides: typing.Mapping = None):
+        manifest = parameters['Manifest']
+
+        # add tags indicating we want to get the Baobab,Ticket
+        self._request['@BBTicket'] = True
+        self._request['@Baobab,Ticket'] = True
+
+        keys_to_copy_uint = ('Baobab,BoardID', 'Baobab,ChipID', 'Baobab,Life', 'Baobab,ManifestEpoch',
+                             'Baobab,SecurityDomain',)
+
+        for key in keys_to_copy_uint:
+            value = get_with_or_without_comma(parameters, key)
+
+            if isinstance(value, bytes):
+                self._request[key] = bytes_to_uint(value)
+            else:
+                self._request[key] = value
+
+        isprod = bool(get_with_or_without_comma(parameters, 'Baobab,ProductionMode', False))
+        self._request['Baobab,ProductionMode'] = isprod
+
+        nonce = get_with_or_without_comma(parameters, 'Baobab,UpdateNonce')
+
+        if nonce is not None:
+            self._request['Baobab,UpdateNonce'] = nonce
+
+        ecid = get_with_or_without_comma(parameters, 'Baobab,ECID')
+
+        if ecid is not None:
+            self._request['Baobab,ECID'] = ecid
+
+        for comp_name, node in manifest.items():
+            if not comp_name.startswith('Baobab,'):
+                continue
+
+            manifest_entry = dict(node)
+            manifest_entry.pop('Info')
+            manifest_entry['EPRO'] = isprod
 
             # finally add entry to request
             self._request[comp_name] = manifest_entry
@@ -533,7 +590,7 @@ class TSSRequest:
                 if comp is None:
                     raise NotImplementedError(f'Unhandled component {k} - can\'t create manifest')
 
-                logging.debug(f'found component {comp} ({k})')
+                logger.debug(f'found component {comp} ({k})')
 
         # write manifest body header
         p.write(b'MANB', asn1.Numbers.IA5String)
@@ -557,36 +614,13 @@ class TSSRequest:
             'Expect': '',
         }
 
-        if self._offline:
-            unique_identifier = str(time.time())
-            request_plist_path = TICKETS_SUBDIR / f'request_data_{unique_identifier}.plist'
-            request_script_path = TICKETS_SUBDIR / f'request_script.sh'
-            response_path = TICKETS_SUBDIR / f'response_{unique_identifier}.txt'
-
-            TICKETS_SUBDIR.mkdir(parents=True, exist_ok=True)
-            for file in TICKETS_SUBDIR.iterdir():
-                file.unlink()
-
-            with request_plist_path.open('wb') as f:
-                plistlib.dump(self._request, f)
-
-            request_script_path.write_text(
-                OFFLINE_REQUEST_SCRIPT.format(request=request_plist_path.name, response=response_path.name))
-            request_script_path.chmod(0o755)
-
-            logging.info(f'waiting for {response_path} to be created')
-            while not response_path.exists() or b'</plist>' not in response_path.read_bytes():
-                time.sleep(1)
-
-            content = response_path.read_bytes()
-        else:
-            logging.info(f'Sending TSS request...')
-            r = requests.post('http://gs.apple.com/TSS/controller?action=2', headers=headers,
-                              data=plistlib.dumps(self._request), verify=False)
-            content = r.content
+        logger.info('Sending TSS request...')
+        r = requests.post(TSS_CONTROLLER_ACTION_URL, headers=headers,
+                          data=plistlib.dumps(self._request), verify=False)
+        content = r.content
 
         if b'MESSAGE=SUCCESS' in content:
-            logging.info('response successfully received')
+            logger.info('response successfully received')
 
         message = content.split(b'MESSAGE=', 1)[1].split(b'&', 1)[0].decode()
         if message != 'SUCCESS':

@@ -1,15 +1,19 @@
 import logging
 
-from tqdm import tqdm
 import click
+from tqdm import tqdm
 
 from pymobiledevice3.cli.cli_common import Command
-from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
 from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.services.mobilebackup2 import Mobilebackup2Service
 
 source_option = click.option('--source', default='', help='The UDID of the source device.')
 password_option = click.option('-p', '--password', default='', help='Backup password.')
 backup_directory_arg = click.argument('backup-directory', type=click.Path(exists=True, file_okay=False))
+backup_directory_option = click.option('-b', '--backup-directory', type=click.Path(exists=True, file_okay=False),
+                                       default='.')
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -122,10 +126,10 @@ def extract(lockdown: LockdownClient, domain_name, relative_path, backup_directo
 
 
 @backup2.command(cls=Command)
-@click.argument('on', type=click.BOOL)
+@click.argument('mode', type=click.Choice(['ON', 'OFF']))
 @click.argument('password')
-@backup_directory_arg
-def encryption(lockdown: LockdownClient, backup_directory, on, password):
+@backup_directory_option
+def encryption(lockdown: LockdownClient, backup_directory, mode, password):
     """
     Set backup encryption on / off.
 
@@ -133,11 +137,12 @@ def encryption(lockdown: LockdownClient, backup_directory, on, password):
     When off, PASSWORD is the current backup password.
     """
     will_encrypt = lockdown.get_value('com.apple.mobile.backup', 'WillEncrypt')
-    if will_encrypt == on:
-        logging.error('Encryption already ' + ('on!' if on else 'off!'))
+    should_encrypt = mode == 'ON'
+    if should_encrypt == will_encrypt:
+        logger.error('Encryption already ' + ('on!' if should_encrypt else 'off!'))
         return
     backup_client = Mobilebackup2Service(lockdown)
-    if on:
+    if should_encrypt:
         backup_client.change_password(backup_directory, new=password)
     else:
         backup_client.change_password(backup_directory, old=password)
@@ -146,14 +151,14 @@ def encryption(lockdown: LockdownClient, backup_directory, on, password):
 @backup2.command(cls=Command)
 @click.argument('old-password')
 @click.argument('new-password')
-@backup_directory_arg
+@backup_directory_option
 def change_password(lockdown: LockdownClient, old_password, new_password, backup_directory):
     """
     Change the backup password.
     """
     will_encrypt = lockdown.get_value('com.apple.mobile.backup', 'WillEncrypt')
     if not will_encrypt:
-        logging.error('Encryption is not turned on!')
+        logger.error('Encryption is not turned on!')
         return
     backup_client = Mobilebackup2Service(lockdown)
     backup_client.change_password(backup_directory, old=old_password, new=new_password)

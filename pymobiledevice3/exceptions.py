@@ -3,7 +3,8 @@ __all__ = [
     'ConnectionFailedError', 'NotTrustedError', 'PairingError', 'NotPairedError', 'CannotStopSessionError',
     'PasswordRequiredError', 'StartServiceError', 'FatalPairingError', 'NoDeviceConnectedError', 'MuxException',
     'MuxVersionError', 'ArgumentError', 'AfcException', 'AfcFileNotFoundError', 'DvtException', 'DvtDirListError',
-    'NotMountedError', 'AlreadyMountedError', 'UnsupportedCommandError', 'ExtractingStackshotError'
+    'NotMountedError', 'AlreadyMountedError', 'UnsupportedCommandError', 'ExtractingStackshotError',
+    'ConnectionTerminatedError', 'WirError', 'WebInspectorNotEnabled', 'RemoteAutomationNotEnabled',
 ]
 
 
@@ -71,9 +72,9 @@ class ArgumentError(PyMobileDevice3Exception):
     pass
 
 
-class AfcException(PyMobileDevice3Exception):
+class AfcException(PyMobileDevice3Exception, OSError):
     def __init__(self, message, status):
-        super(AfcException, self).__init__(message)
+        OSError.__init__(self, status, message)
         self.status = status
 
 
@@ -108,4 +109,24 @@ class UnsupportedCommandError(PyMobileDevice3Exception):
 
 class ExtractingStackshotError(PyMobileDevice3Exception):
     """ Raise when stackshot is not received in the core profile session. """
+    pass
+
+
+class ConnectionTerminatedError(PyMobileDevice3Exception):
+    """ Raise when a connection is terminated abruptly. """
+    pass
+
+
+class WebInspectorNotEnabled(PyMobileDevice3Exception):
+    """ Raise when Web Inspector is not enabled. """
+    pass
+
+
+class RemoteAutomationNotEnabled(PyMobileDevice3Exception):
+    """ Raise when Web Inspector remote automation is not enabled. """
+    pass
+
+
+class WirError(PyMobileDevice3Exception):
+    """ Raise when Webinspector WIR command fails. """
     pass

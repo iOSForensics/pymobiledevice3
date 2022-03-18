@@ -5,8 +5,8 @@ import struct
 import threading
 from enum import Enum
 
+from pymobiledevice3 import usbmux
 from pymobiledevice3.exceptions import NoDeviceConnectedError, ConnectionFailedError, PyMobileDevice3Exception
-from pymobiledevice3.lockdown import list_devices
 from pymobiledevice3.service_connection import ServiceConnection
 
 CTRL_PORT = 0x43a  # 1082
@@ -19,6 +19,8 @@ FDR_PROXY_MSG = 0x105
 FDR_PLIST_MSG = 0xbbaa
 
 conn_port = None
+
+logger = logging.getLogger(__name__)
 
 
 class fdr_type(Enum):
@@ -34,27 +36,23 @@ class FDRClient:
     def __init__(self, type_: fdr_type, udid=None):
         global conn_port
 
-        available_udids = list_devices()
-        if udid is None:
-            if len(available_udids) == 0:
-                raise NoDeviceConnectedError()
-            udid = available_udids[0]
-        else:
-            if udid not in available_udids:
+        device = usbmux.select_device(udid)
+        if device is None:
+            if udid:
                 raise ConnectionFailedError()
+            else:
+                raise NoDeviceConnectedError()
 
-        logging.debug('connecting to FDR')
-
-        self.logger = logging.getLogger(__name__)
+        logger.debug('connecting to FDR')
 
         if type_ == fdr_type.FDR_CTRL:
-            self.service = ServiceConnection.create(udid, self.SERVICE_PORT)
+            self.service = ServiceConnection.create(device.serial, self.SERVICE_PORT)
             self.ctrl_handshake()
         else:
-            self.service = ServiceConnection.create(udid, conn_port)
+            self.service = ServiceConnection.create(device.serial, conn_port)
             self.sync_handshake()
 
-        logging.debug('FDR connected')
+        logger.debug('FDR connected')
 
     def recv_plist(self):
         return self.service.recv_plist(endianity='<')
@@ -65,7 +63,7 @@ class FDRClient:
     def ctrl_handshake(self):
         global conn_port
 
-        logging.debug('About to do ctrl handshake')
+        logger.debug('About to do ctrl handshake')
 
         self.service.sendall(CTRLCMD)
 
@@ -79,7 +77,7 @@ class FDRClient:
         resp = self.send_recv_plist(req)
         conn_port = resp['ConnPort']
 
-        logging.debug(f'Ctrl handshake done (ConnPort = {conn_port})')
+        logger.debug(f'Ctrl handshake done (ConnPort = {conn_port})')
 
     def sync_handshake(self):
         self.service.sendall(HELLOCMD)
@@ -95,25 +93,25 @@ class FDRClient:
             raise PyMobileDevice3Exception('Did not receive HelloConn reply...')
 
         if identifier:
-            logging.debug(f'got device identifier: {identifier}')
+            logger.debug(f'got device identifier: {identifier}')
 
     def handle_sync_cmd(self):
         self.service.recvall(2)
 
         # Open a new connection and wait for messages on it
-        logging.debug('FDR connected in reply to sync message, starting command thread')
+        logger.debug('FDR connected in reply to sync message, starting command thread')
         start_fdr_thread(fdr_type.FDR_CONN)
 
     def handle_proxy_cmd(self):
         buf = self.service.recv(1048576)
-        logging.debug(f'got proxy command with {len(buf)} bytes')
+        logger.debug(f'got proxy command with {len(buf)} bytes')
 
         # Just return success here unconditionally because we don't know
         # anything else and we will eventually abort on failure anyway
         self.service.sendall(struct.pack('<H', 5))
 
         if len(buf) < 3:
-            logging.debug(f'FDR {self} proxy command data too short, retrying')
+            logger.debug(f'FDR {self} proxy command data too short, retrying')
             return self.poll_and_handle_message()
 
         # ack command data too
@@ -129,7 +127,7 @@ class FDRClient:
             hostlen = buf[2]
             host = buf[3:3 + hostlen]
 
-            logging.debug(f'FDR {self} Proxy connect request to {host}:{port}')
+            logger.debug(f'FDR {self} Proxy connect request to {host}:{port}')
 
         if host is None:
             # missing or zero length host name
@@ -138,8 +136,8 @@ class FDRClient:
         sockfd = socket.socket()
         sockfd.connect((host, port))
 
-        sockfd.settimeout(.1)
-        self.service.socket.settimeout(.1)
+        sockfd.settimeout(.01)
+        self.service.socket.settimeout(.01)
 
         while True:
             buf = b''
@@ -149,8 +147,8 @@ class FDRClient:
                 pass
 
             if buf:
-                logging.debug(f'FDR {self} got payload of {len(buf)} bytes, now try to proxy it')
-                logging.debug(f'Sending {len(buf)} bytes of data')
+                logger.debug(f'FDR {self} got payload of {len(buf)} bytes, now try to proxy it')
+                logger.debug(f'Sending {len(buf)} bytes of data')
                 sockfd.sendall(buf)
 
             buf = b''
@@ -168,7 +166,7 @@ class FDRClient:
         if command == 'Ping':
             self.send_recv_plist({'Pong': True})
         else:
-            logging.warning(f'FDR {self} received unknown plist command: {command}')
+            logger.warning(f'FDR {self} received unknown plist command: {command}')
 
     def poll_and_handle_message(self):
         # TODO: is it okay?
@@ -183,21 +181,21 @@ class FDRClient:
         if cmd in handlers:
             handlers[cmd]()
         else:
-            logging.warning(f'ignoring FDR message: {cmd}')
+            logger.warning(f'ignoring FDR message: {cmd}')
 
 
 def fdr_listener_thread(type_: fdr_type):
     try:
         client = FDRClient(type_)
 
-        logging.debug(f'FDR {client} waiting for message...')
+        logger.debug(f'FDR {client} waiting for message...')
 
         while True:
             client.poll_and_handle_message()
     except ConnectionAbortedError:
         pass
 
-    logging.debug(f'FDR {client} terminating...')
+    logger.debug(f'FDR {client} terminating...')
 
 
 def start_fdr_thread(type_: fdr_type):

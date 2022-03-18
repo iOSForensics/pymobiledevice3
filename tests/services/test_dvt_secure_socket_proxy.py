@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
+from pymobiledevice3.exceptions import DvtDirListError, AlreadyMountedError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-from pymobiledevice3.exceptions import DvtDirListError, AlreadyMountedError
 from pymobiledevice3.services.dvt.instruments.application_listing import ApplicationListing
 from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
 from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
@@ -16,15 +16,18 @@ IMAGE_TYPE = 'Developer'
 
 @pytest.fixture(scope='module', autouse=True)
 def mount_developer_disk_image():
-    mounter = MobileImageMounterService(lockdown=LockdownClient())
+    with LockdownClient() as lockdown:
+        with MobileImageMounterService(lockdown=lockdown) as mounter:
+            if mounter.is_image_mounted('Developer'):
+                yield
 
-    image_path = DEVICE_SUPPORT / mounter.lockdown.sanitized_ios_version / 'DeveloperDiskImage.dmg'
-    signature = image_path.with_suffix('.dmg.signature').read_bytes()
-    mounter.upload_image('Developer', image_path.read_bytes(), signature)
-    try:
-        mounter.mount(IMAGE_TYPE, signature)
-    except AlreadyMountedError:
-        pass
+            image_path = DEVICE_SUPPORT / mounter.lockdown.sanitized_ios_version / 'DeveloperDiskImage.dmg'
+            signature = image_path.with_suffix('.dmg.signature').read_bytes()
+            mounter.upload_image('Developer', image_path.read_bytes(), signature)
+            try:
+                mounter.mount(IMAGE_TYPE, signature)
+            except AlreadyMountedError:
+                pass
 
 
 def get_process_data(lockdown, name):

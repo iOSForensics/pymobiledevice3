@@ -1,5 +1,4 @@
 import io
-import logging
 import plistlib
 import typing
 from functools import partial
@@ -11,8 +10,10 @@ from bpylist2 import archiver
 from construct import Struct, Default, Int64ul, Prefixed, GreedyRange, Select, Const, Int32ul, Switch, this, \
     GreedyBytes, Adapter, Int16ul, Int32sl
 from pygments import highlight, lexers, formatters
+
 from pymobiledevice3.exceptions import DvtException
 from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.services.base_service import BaseService
 
 SHELL_USAGE = '''
 # This shell allows you to send messages to the DVTSecureSocketProxy and receive answers easily.
@@ -182,16 +183,58 @@ class ChannelFragmenter:
                 self._stream_packet_data = b''
 
 
-class RemoteServer(object):
+class RemoteServer(BaseService):
+    """
+    Wrapper to Apple's RemoteServer.
+    This server exports several ObjC objects allowing calling their respective selectors.
+    The `/Developer/Library/PrivateFrameworks/DVTInstrumentsFoundation.framework/DTServiceHub` service reads the
+    configuration stored from `[[NSUserDefaults standardUserDefaults] boolForKey:@"DTXConnectionTracer"]`
+    If the value is true, then `/tmp/DTServiceHub[PID].DTXConnection.RANDOM.log` is created and can be used to debug the
+    transport protocol.
+
+    For example:
+
+    ```
+    root@iPhone (/var/root)# tail -f /tmp/DTServiceHub[369].DTXConnection.qNjM2U.log
+    170.887982 x4 resuming [c0]: <DTXConnection 0x100d20670 : x4>
+    170.889120 x4   sent   [c0]: < DTXMessage 0x100d52b10 : i2.0 c0 dispatch:[_notifyOfPublishedCapabilities:<NSDictionary 0x100d0e1b0 | 92 key/value pairs>] >
+    170.889547 x4 received [c0]: < DTXMessage 0x100d0a550 : i1.0 c0 dispatch:[_notifyOfPublishedCapabilities:<NSDictionary 0x100d16a40 | 2 key/value pairs>] >
+    170.892101 x4 received [c0]: < DTXMessage 0x100d0a550 : i3.0e c0 dispatch:[_requestChannelWithCode:[1]identifier :"com.apple.instruments.server.services.deviceinfo"] >
+    170.892238 x4   sent   [c0]: < DTXMessage 0x100d61830 : i3.1 c0 >
+    170.892973 x4 received [c1f]: < DTXMessage 0x100d0a550 : i4.0e c1 dispatch:[runningProcesses] >
+    171.204957 x4   sent   [c1f]: < DTXMessage 0x100c557a0 : i4.1 c1 object:(__NSArrayM*)<NSArray 0x100c199d0 | 245 objects> { <NSDictionary 0x100c167c0 | 5 key/value pairs>, <NSDictionary 0x100d17970 | 5 key/value pairs>, <NSDictionary 0x100d17f40 | 5 key/value pairs>, <NSDictionary 0x100d61750 | 5 key/value pairs>, <NSDictionary 0x100c16760 | 5 key/value pairs>, ...  } >
+    171.213326 x4 received [c0]: < DTXMessage : kDTXInterruptionMessage >
+    171.213424 x4  handler [c0]: < DTXMessage : i1 kDTXInterruptionMessage >
+    171.213477 x4 received [c1f]: < DTXMessage : kDTXInterruptionMessage >
+    ```
+
+    For editing the configuration we can simply add the respected key into:
+    `/var/mobile/Library/Preferences/.GlobalPreferences.plist` and kill `cfprefsd`
+
+    The valid selectors for triggering can be found using the following Frida script the same way Troy Bowman used for
+    iterating all classes which implement the protocol `DTXAllowedRPC`:
+
+    ```shell
+    frida -U DTServiceHub
+    ```
+
+    ```javascript
+    for (var name in ObjC.protocols) {
+        var protocol = ObjC.protocols[name]
+        if ('DTXAllowedRPC' in protocol.protocols) {
+            console.log('@protocol', name)
+            console.log('  ' + Object.keys(protocol.methods).join('\n  '))
+        }
+    }
+    ```
+    """
     BROADCAST_CHANNEL = 0
     INSTRUMENTS_MESSAGE_TYPE = 2
     EXPECTS_REPLY_MASK = 0x1000
 
     def __init__(self, lockdown: LockdownClient, service_name, remove_ssl_context=True):
-        self.logger = logging.getLogger(__name__)
-        self.lockdown = lockdown
+        super().__init__(lockdown, service_name, is_developer_service=True)
 
-        self.service = self.lockdown.start_developer_service(service_name)
         if remove_ssl_context and hasattr(self.service.socket, '_sslobj'):
             self.service.socket._sslobj = None
 
@@ -270,7 +313,7 @@ class RemoteServer(object):
                 pprint(plistlib.loads(data))
                 raise e
             except plistlib.InvalidFileException:
-                logging.warning(f'got an invalid plist: {data[:40]}')
+                self.logger.warning(f'got an invalid plist: {data[:40]}')
         return data, aux
 
     def recv_message(self, channel: int = BROADCAST_CHANNEL):
@@ -321,9 +364,6 @@ class RemoteServer(object):
     def __enter__(self):
         self.perform_handshake()
         return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
 
 
 class Tap:

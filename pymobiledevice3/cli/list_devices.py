@@ -13,12 +13,18 @@ def cli():
 
 @cli.command('list-devices')
 @click.option('--color/--no-color', default=True)
-def list_devices(color):
+@click.option('-u', '--usb', is_flag=True, help='show only usb devices')
+def list_devices(color, usb):
     """ list connected devices """
     connected_devices = []
     for device in usbmux.list_devices():
         udid = device.serial
-        lockdown = LockdownClient(udid)
+
+        if usb:
+            if ':' in udid:
+                continue
+
+        lockdown = LockdownClient(udid, autopair=False)
         connected_devices.append(lockdown.all_values)
 
-    print_json(connected_devices, colored=color, default=lambda x: '<non-serializable>')
+    print_json(connected_devices, colored=color)

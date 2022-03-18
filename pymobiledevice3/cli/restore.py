@@ -6,10 +6,12 @@ import traceback
 import IPython
 import click
 from pygments import highlight, lexers, formatters
-from pymobiledevice3.cli.cli_common import print_json
+
+from pymobiledevice3 import usbmux
+from pymobiledevice3.cli.cli_common import print_json, set_verbosity
 from pymobiledevice3.exceptions import IncorrectModeError
 from pymobiledevice3.irecv import IRecv
-from pymobiledevice3.lockdown import list_devices, LockdownClient
+from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.restore.device import Device
 from pymobiledevice3.restore.recovery import Recovery
 from pymobiledevice3.restore.restore import Restore
@@ -20,12 +22,15 @@ SHELL_USAGE = """
 print(irecv.getenv('build-version'))
 """
 
+logger = logging.getLogger(__name__)
+
 
 class Command(click.Command):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.params[:0] = [
             click.Option(('device', '--ecid'), type=click.INT, callback=self.device),
+            click.Option(('verbosity', '-v', '--verbose'), count=True, callback=set_verbosity, expose_value=False),
         ]
 
     @staticmethod
@@ -35,18 +40,18 @@ class Command(click.Command):
             return
 
         ecid = value
-        logging.debug('searching among connected devices via lockdownd')
-        for udid in list_devices():
+        logger.debug('searching among connected devices via lockdownd')
+        for device in usbmux.list_devices():
             try:
-                lockdown = LockdownClient(udid=udid)
+                lockdown = LockdownClient(udid=device.serial)
             except IncorrectModeError:
                 continue
             if (ecid is None) or (lockdown.ecid == value):
-                logging.debug('found device')
+                logger.debug('found device')
                 return lockdown
             else:
                 continue
-        logging.debug(f'waiting for device to be available in Recovery mode')
+        logger.debug('waiting for device to be available in Recovery mode')
         return IRecv(ecid=ecid)
 
 
@@ -73,9 +78,10 @@ def restore_shell(device):
 
 
 @restore.command('enter', cls=Command)
-def restore_enter(lockdown):
+def restore_enter(device):
     """ enter Recovery mode """
-    lockdown.enter_recovery()
+    if isinstance(device, LockdownClient):
+        device.enter_recovery()
 
 
 @restore.command('exit')
@@ -90,8 +96,7 @@ def restore_exit():
 @click.argument('ipsw', type=click.File('rb'))
 @click.argument('out', type=click.File('wb'), required=False)
 @click.option('--color/--no-color', default=True)
-@click.option('--offline', is_flag=True)
-def restore_tss(device, ipsw, out, color, offline):
+def restore_tss(device, ipsw, out, color):
     """ query SHSH blobs """
     lockdown = None
     irecv = None
@@ -101,7 +106,7 @@ def restore_tss(device, ipsw, out, color, offline):
         irecv = device
 
     device = Device(lockdown=lockdown, irecv=irecv)
-    tss = Recovery(ipsw, device, offline=offline).fetch_tss_record()
+    tss = Recovery(ipsw, device).fetch_tss_record()
     if out:
         plistlib.dump(tss, out)
     print_json(tss, colored=color)
@@ -128,9 +133,8 @@ def restore_ramdisk(device, ipsw, tss):
 @restore.command('update', cls=Command)
 @click.argument('ipsw', type=click.File('rb'))
 @click.option('--tss', type=click.File('rb'))
-@click.option('--offline', is_flag=True)
 @click.option('--erase', is_flag=True)
-def restore_update(device, ipsw, tss, offline, erase):
+def restore_update(device, ipsw, tss, erase):
     """ perform an upgrade """
     if tss:
         tss = plistlib.load(tss)
@@ -148,7 +152,7 @@ def restore_update(device, ipsw, tss, offline, erase):
         behavior = 'Erase'
 
     try:
-        Restore(ipsw, device, tss=tss, offline=offline, behavior=behavior).update()
+        Restore(ipsw, device, tss=tss, behavior=behavior).update()
     except Exception:
         # click may "swallow" several exception types so we try to catch them all here
         traceback.print_exc()

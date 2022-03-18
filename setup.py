@@ -1,26 +1,35 @@
-from setuptools import setup, find_packages
-import os
+from pathlib import Path
 
-BASE_DIR = os.path.realpath(os.path.dirname(__file__))
-VERSION = '1.10.6'
+from setuptools import setup, find_packages
+
+BASE_DIR = Path(__file__).parent.resolve(strict=True)
+VERSION = '1.19.3'
 PACKAGE_NAME = 'pymobiledevice3-gotohack'
+DATA_FILES_EXTENSIONS = ['*.txt', '*.json', '*.js']
 PACKAGES = [p for p in find_packages() if not p.startswith('tests')]
 
 
 def parse_requirements():
     reqs = []
-    if os.path.isfile(os.path.join(BASE_DIR, 'requirements.txt')):
-        with open(os.path.join(BASE_DIR, 'requirements.txt'), 'r') as fd:
-            for line in fd.readlines():
-                line = line.strip()
-                if line:
-                    reqs.append(line)
+    with open(BASE_DIR / 'requirements.txt', 'r') as fd:
+        for line in fd.readlines():
+            line = line.strip()
+            if line:
+                reqs.append(line)
     return reqs
 
 
 def get_description():
-    with open(os.path.join(BASE_DIR, 'README.md'), 'r') as fh:
-        return fh.read()
+    return (BASE_DIR / 'README.md').read_text()
+
+
+def get_data_files():
+    data_files = ['requirements.txt']
+    package_dir = Path(__file__).parent
+    for extension in DATA_FILES_EXTENSIONS:
+        for file in (package_dir / PACKAGE_NAME).glob(f'**/{extension}'):
+            data_files.append(str(file.relative_to(package_dir)))
+    return data_files
 
 
 if __name__ == '__main__':
@@ -32,9 +41,11 @@ if __name__ == '__main__':
         long_description_content_type='text/markdown',
         cmdclass={},
         packages=PACKAGES,
-        package_data={'': ['*.txt', '*.TXT', '*.json'], },
-        data_files=[('.', ['requirements.txt'])],
+        include_package_data=True,
+        data_files=[('.', get_data_files())],
         author='DoronZ',
+        author_email='doron88@gmail.com',
+        license='GNU GENERAL PUBLIC LICENSE - Version 3, 29 June 2007',
         install_requires=parse_requirements(),
         entry_points={
             'console_scripts': ['pymobiledevice3=pymobiledevice3.__main__:cli',
@@ -45,10 +56,11 @@ if __name__ == '__main__':
             'Programming Language :: Python :: 3.7',
             'Programming Language :: Python :: 3.8',
             'Programming Language :: Python :: 3.9',
+            'Programming Language :: Python :: 3.10',
         ],
         url='https://github.com/doronz88/pymobiledevice3',
         project_urls={
             'pymobiledevice3': 'https://github.com/doronz88/pymobiledevice3'
         },
-        tests_require=['pytest'],
+        tests_require=['pytest', 'cmd2_ext_test'],
     )

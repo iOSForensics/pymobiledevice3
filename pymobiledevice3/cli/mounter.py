@@ -5,13 +5,16 @@ from pathlib import Path
 
 import click
 import requests
-from pymobiledevice3.cli.cli_common import Command, print_json
-from pymobiledevice3.exceptions import NotMountedError, UnsupportedCommandError, AlreadyMountedError
-from pymobiledevice3.lockdown import LockdownClient
-from pymobiledevice3.services.mobile_image_mounter import MobileImageMounterService
 from tqdm import tqdm
 
+from pymobiledevice3.cli.cli_common import Command, print_json
+from pymobiledevice3.exceptions import NotMountedError, UnsupportedCommandError
+from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.services.mobile_image_mounter import MobileImageMounterService
+
 DEVELOPER_DISK_IMAGE_URL = 'https://github.com/filsv/iPhoneOSDeviceSupport/raw/master/{ios_version}.zip'
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -49,7 +52,7 @@ def mounter_lookup(lockdown: LockdownClient, color, image_type):
         signature = MobileImageMounterService(lockdown=lockdown).lookup_image(image_type)
         print_json(signature, colored=color)
     except NotMountedError:
-        logging.error(f'Disk image of type: {image_type} is not mounted')
+        logger.error(f'Disk image of type: {image_type} is not mounted')
 
 
 @mounter.command('umount', cls=Command)
@@ -60,15 +63,15 @@ def mounter_umount(lockdown: LockdownClient):
     image_mounter = MobileImageMounterService(lockdown=lockdown)
     try:
         image_mounter.umount(image_type, mount_path, b'')
-        logging.info('DeveloperDiskImage unmounted successfully')
+        logger.info('DeveloperDiskImage unmounted successfully')
     except NotMountedError:
-        logging.error('DeveloperDiskImage isn\'t currently mounted')
+        logger.error('DeveloperDiskImage isn\'t currently mounted')
     except UnsupportedCommandError:
-        logging.error('Your iOS version doesn\'t support this command')
+        logger.error('Your iOS version doesn\'t support this command')
 
 
 def download_file(url, local_filename):
-    logging.debug(f'downloading: {local_filename}')
+    logger.debug(f'downloading: {local_filename}')
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
         total_size_in_bytes = int(r.headers.get('content-length', 0))
@@ -103,36 +106,36 @@ def download_developer_disk_image(ios_version, directory):
 def mounter_mount(lockdown: LockdownClient, image, signature, xcode, version):
     """ mount developer image. """
     image_type = 'Developer'
-    developer_disk_image_dir = None
+
+    image_mounter = MobileImageMounterService(lockdown=lockdown)
+    if image_mounter.is_image_mounted(image_type):
+        logger.error('DeveloperDiskImage is already mounted')
+        return
 
     if image and signature:
-        logging.debug('using given image and signature for mount command')
+        logger.debug('using given image and signature for mount command')
     else:
-        logging.debug('trying to figure out the best suited DeveloperDiskImage')
+        logger.debug('trying to figure out the best suited DeveloperDiskImage')
         if version is None:
             version = lockdown.sanitized_ios_version
         image = f'{xcode}/Contents/Developer/Platforms/iPhoneOS.platform/DeviceSupport/{version}/DeveloperDiskImage.dmg'
         signature = f'{image}.signature'
         developer_disk_image_dir = Path(image).parent
 
+        if not developer_disk_image_dir.exists():
+            try:
+                download_developer_disk_image(version, developer_disk_image_dir)
+            except PermissionError:
+                logger.error(
+                    f'DeveloperDiskImage could not be saved to Xcode default path ({developer_disk_image_dir}). '
+                    f'Please make sure your user has the necessary permissions')
+                return
+
     image = Path(image)
     signature = Path(signature)
-
-    if not developer_disk_image_dir.exists():
-        try:
-            download_developer_disk_image(version, developer_disk_image_dir)
-        except PermissionError:
-            logging.error(f'DeveloperDiskImage could not be saved to Xcode default path ({developer_disk_image_dir}). '
-                          f'Please make sure your user has the necessary permissions')
-            return
-
     image = image.read_bytes()
     signature = signature.read_bytes()
 
-    image_mounter = MobileImageMounterService(lockdown=lockdown)
     image_mounter.upload_image(image_type, image, signature)
-    try:
-        image_mounter.mount(image_type, signature)
-        logging.info('DeveloperDiskImage mounted successfully')
-    except AlreadyMountedError:
-        logging.error('DeveloperDiskImage is already mounted')
+    image_mounter.mount(image_type, signature)
+    logger.info('DeveloperDiskImage mounted successfully')
